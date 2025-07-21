@@ -175,21 +175,28 @@ func CreateApp(isCacheSM bool) *App {
 	return &app
 }
 
-func ScenarioHeavyRead(app *App) {
-	const (
-		totalOps    = 1000000 
-		readRatio   = 0.9
-		concurrency = 500 
-	)
+type Scale struct {
+	name        string
+	totalOps    int
+	concurrency int
+	readRatio   float64
+	writeRatio  float64
+}
 
+var smallScale = Scale{"small", 10000, 50, 0.9, 0.9}
+var mediumScale = Scale{"medium", 100000, 200, 0.9, 0.9}
+var largeScale = Scale{"large", 10000000, 5000, 0.5, 0.5}
+
+func RunScenario(app *App, scale Scale) {
 	var wg sync.WaitGroup
-	wg.Add(concurrency)
+	wg.Add(scale.concurrency)
 
-	for i := 0; i < concurrency; i++ {
+	for i := 0; i < scale.concurrency; i++ {
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < totalOps/concurrency; j++ {
-				if float64(j)/float64(totalOps/concurrency) < readRatio {
+			for j := 0; j < scale.totalOps/scale.concurrency; j++ {
+				ratio := float64(j) / float64(scale.totalOps/scale.concurrency)
+				if ratio < scale.readRatio {
 					app.UserS.Get(id)
 				} else {
 					app.UserS.Store(id, User{Name: fmt.Sprintf("User-%d", j)})
@@ -200,107 +207,27 @@ func ScenarioHeavyRead(app *App) {
 	wg.Wait()
 }
 
-func ScenarioHeavyWrite(app *App) {
-	const (
-		totalOps    = 1000000 
-		writeRatio  = 0.9
-		concurrency = 500
-	)
-
-	var wg sync.WaitGroup
-	wg.Add(concurrency)
-
-	for i := 0; i < concurrency; i++ {
-		go func(id int) {
-			defer wg.Done()
-			for j := 0; j < totalOps/concurrency; j++ {
-				if float64(j)/float64(totalOps/concurrency) < writeRatio {
-					app.UserS.Store(id, User{Name: fmt.Sprintf("User-%d", j)})
-				} else {
-					app.UserS.Get(id)
-				}
-			}
-		}(i)
-	}
-	wg.Wait()
-}
-
-func ScenarioMixedReadWrite(app *App) {
-	const (
-		totalOps    = 10000000
-		readRatio   = 0.5
-		concurrency = 5000
-	)
-
-	var wg sync.WaitGroup
-	wg.Add(concurrency)
-
-	for i := 0; i < concurrency; i++ {
-		go func(id int) {
-			defer wg.Done()
-			for j := 0; j < totalOps/concurrency; j++ {
-				if float64(j)/float64(totalOps/concurrency) < readRatio {
-					app.UserS.Get(id)
-				} else {
-					app.UserS.Store(id, User{Name: fmt.Sprintf("User-%d", j)})
-				}
-			}
-		}(i)
-	}
-	wg.Wait()
-}
-
-func runScenario(name string, fn func()) time.Duration {
-	const runs = 10
+func BenchmarkScenario(name string, isCacheSM bool, scale Scale) {
 	var total time.Duration
-	for i := 0; i < runs; i++ {
+	for i := 0; i < 10; i++ {
+		app := CreateApp(isCacheSM)
 		start := time.Now()
-		fn()
-		elapsed := time.Since(start)
-		total += elapsed
+		RunScenario(app, scale)
+		total += time.Since(start)
 	}
-	avg := total / runs
-	fmt.Printf("%s average time over %d runs: %v\n", name, runs, avg)
-	return avg
-}
-
-func ScenarioSyncMapHeavyRead() {
-	app := CreateApp(true)
-	ScenarioHeavyRead(app)
-}
-
-func ScenarioSyncMapHeavyWrite() {
-	app := CreateApp(true)
-	ScenarioHeavyWrite(app)
-}
-
-func ScenarioRWMutexHeavyRead() {
-	app := CreateApp(false)
-	ScenarioHeavyRead(app)
-}
-
-func ScenarioRWMutexHeavyWrite() {
-	app := CreateApp(false)
-	ScenarioHeavyWrite(app)
-}
-
-func ScenarioSyncMapMixed() {
-	app := CreateApp(true)
-	ScenarioMixedReadWrite(app)
-}
-
-func ScenarioRWMutexMixed() {
-	app := CreateApp(false)
-	ScenarioMixedReadWrite(app)
+	fmt.Printf("%s (%s) average time over 10 runs: %v\n", name, scale.name, total/10)
 }
 
 func main() {
 	fmt.Println("Starting benchmarks...")
 
-	runScenario("sync.Map heavy read", ScenarioSyncMapHeavyRead)
-	runScenario("sync.Map heavy write", ScenarioSyncMapHeavyWrite)
-	runScenario("RWMutex heavy read", ScenarioRWMutexHeavyRead)
-	runScenario("RWMutex heavy write", ScenarioRWMutexHeavyWrite)
-	runScenario("sync.Map mixed read/write", ScenarioSyncMapMixed)
-	runScenario("RWMutex mixed read/write", ScenarioRWMutexMixed)
+	for _, scale := range []Scale{smallScale, mediumScale, largeScale} {
+		fmt.Printf("\n--- %s scale ---\n", scale.name)
+		BenchmarkScenario("sync.Map heavy read", true, Scale{scale.name, scale.totalOps, scale.concurrency, 0.9, 0.1})
+		BenchmarkScenario("sync.Map heavy write", true, Scale{scale.name, scale.totalOps, scale.concurrency, 0.1, 0.9})
+		BenchmarkScenario("RWMutex heavy read", false, Scale{scale.name, scale.totalOps, scale.concurrency, 0.9, 0.1})
+		BenchmarkScenario("RWMutex heavy write", false, Scale{scale.name, scale.totalOps, scale.concurrency, 0.1, 0.9})
+		BenchmarkScenario("sync.Map mixed read/write", true, Scale{scale.name, scale.totalOps, scale.concurrency, 0.5, 0.5})
+		BenchmarkScenario("RWMutex mixed read/write", false, Scale{scale.name, scale.totalOps, scale.concurrency, 0.5, 0.5})
+	}
 }
