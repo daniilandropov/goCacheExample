@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 )
 
 const (
@@ -21,6 +22,7 @@ type User struct {
 
 type UserRepo struct {
 	o         sync.Once
+	dbMutex   sync.Mutex
 	db        map[int]User
 	isCacheSM bool
 	cacheSM   sync.Map
@@ -69,7 +71,9 @@ func (u *UserRepo) Get(id int) (User, bool) {
 		return v, true
 	}
 
+	u.dbMutex.Lock()
 	user, ok := u.db[id]
+	u.dbMutex.Unlock()
 	if !ok {
 		u.logger.Println(notFoundInDB)
 		return User{}, false
@@ -83,7 +87,9 @@ func (u *UserRepo) Get(id int) (User, bool) {
 }
 
 func (u *UserRepo) Store(id int, user User) {
+	u.dbMutex.Lock()
 	u.db[id] = user
+	u.dbMutex.Unlock()
 	u.storeInCache(id, user)
 }
 
@@ -169,28 +175,135 @@ func CreateApp(isCacheSM bool) *App {
 	return &app
 }
 
-func ScenarioSyncMapCache() {
+func ScenarioHeavyRead(app *App) {
+	const (
+		totalOps    = 10000
+		readRatio   = 0.9
+		concurrency = 50
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+
+	for i := 0; i < concurrency; i++ {
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < totalOps/concurrency; j++ {
+				if float64(j)/float64(totalOps/concurrency) < readRatio {
+					app.UserS.Get(id)
+				} else {
+					app.UserS.Store(id, User{Name: fmt.Sprintf("User-%d", j)})
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+func ScenarioHeavyWrite(app *App) {
+	const (
+		totalOps    = 10000
+		writeRatio  = 0.9
+		concurrency = 50
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+
+	for i := 0; i < concurrency; i++ {
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < totalOps/concurrency; j++ {
+				if float64(j)/float64(totalOps/concurrency) < writeRatio {
+					app.UserS.Store(id, User{Name: fmt.Sprintf("User-%d", j)})
+				} else {
+					app.UserS.Get(id)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+func ScenarioMixedReadWrite(app *App) {
+	const (
+		totalOps    = 10000000
+		readRatio   = 0.5
+		concurrency = 5000
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+
+	for i := 0; i < concurrency; i++ {
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < totalOps/concurrency; j++ {
+				if float64(j)/float64(totalOps/concurrency) < readRatio {
+					app.UserS.Get(id)
+				} else {
+					app.UserS.Store(id, User{Name: fmt.Sprintf("User-%d", j)})
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+func ScenarioSyncMapMixed() {
 	app := CreateApp(true)
-	Scenario(app)
+	ScenarioMixedReadWrite(app)
 }
 
-func ScenarioRWMutexCache() {
+func ScenarioRWMutexMixed() {
 	app := CreateApp(false)
-	Scenario(app)
+	ScenarioMixedReadWrite(app)
 }
 
-func Scenario(app *App) {
-	v, ok := app.UserS.Get(1)
-	app.logger.Println(v, ok)
-	app.UserS.Store(1, User{Name: "Ivan"})
-	v, ok = app.UserS.Get(1)
-	app.logger.Println(v, ok)
-	v, ok = app.UserS.Get(1)
-	app.logger.Println(v, ok)
-	app.Println()
+func ScenarioSyncMapHeavyRead() {
+	app := CreateApp(true)
+	ScenarioHeavyRead(app)
+}
+
+func ScenarioSyncMapHeavyWrite() {
+	app := CreateApp(true)
+	ScenarioHeavyWrite(app)
+}
+
+func ScenarioRWMutexHeavyRead() {
+	app := CreateApp(false)
+	ScenarioHeavyRead(app)
+}
+
+func ScenarioRWMutexHeavyWrite() {
+	app := CreateApp(false)
+	ScenarioHeavyWrite(app)
 }
 
 func main() {
-	ScenarioSyncMapCache()
-	ScenarioRWMutexCache()
+	fmt.Println("Starting benchmarks...")
+
+	start := time.Now()
+	ScenarioSyncMapHeavyRead()
+	fmt.Printf("sync.Map heavy read took: %v\n", time.Since(start))
+
+	start = time.Now()
+	ScenarioSyncMapHeavyWrite()
+	fmt.Printf("sync.Map heavy write took: %v\n", time.Since(start))
+
+	start = time.Now()
+	ScenarioRWMutexHeavyRead()
+	fmt.Printf("RWMutex heavy read took: %v\n", time.Since(start))
+
+	start = time.Now()
+	ScenarioRWMutexHeavyWrite()
+	fmt.Printf("RWMutex heavy write took: %v\n", time.Since(start))
+
+	start = time.Now()
+	ScenarioSyncMapMixed()
+	fmt.Printf("sync.Map mixed read/write took: %v\n", time.Since(start))
+
+	start = time.Now()
+	ScenarioRWMutexMixed()
+	fmt.Printf("RWMutex mixed read/write took: %v\n", time.Since(start))
 }
