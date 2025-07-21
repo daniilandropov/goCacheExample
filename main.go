@@ -177,9 +177,9 @@ func CreateApp(isCacheSM bool) *App {
 
 func ScenarioHeavyRead(app *App) {
 	const (
-		totalOps    = 10000
+		totalOps    = 1000000 
 		readRatio   = 0.9
-		concurrency = 50
+		concurrency = 500 
 	)
 
 	var wg sync.WaitGroup
@@ -202,9 +202,9 @@ func ScenarioHeavyRead(app *App) {
 
 func ScenarioHeavyWrite(app *App) {
 	const (
-		totalOps    = 10000
+		totalOps    = 1000000 
 		writeRatio  = 0.9
-		concurrency = 50
+		concurrency = 500
 	)
 
 	var wg sync.WaitGroup
@@ -250,14 +250,18 @@ func ScenarioMixedReadWrite(app *App) {
 	wg.Wait()
 }
 
-func ScenarioSyncMapMixed() {
-	app := CreateApp(true)
-	ScenarioMixedReadWrite(app)
-}
-
-func ScenarioRWMutexMixed() {
-	app := CreateApp(false)
-	ScenarioMixedReadWrite(app)
+func runScenario(name string, fn func()) time.Duration {
+	const runs = 10
+	var total time.Duration
+	for i := 0; i < runs; i++ {
+		start := time.Now()
+		fn()
+		elapsed := time.Since(start)
+		total += elapsed
+	}
+	avg := total / runs
+	fmt.Printf("%s average time over %d runs: %v\n", name, runs, avg)
+	return avg
 }
 
 func ScenarioSyncMapHeavyRead() {
@@ -280,30 +284,23 @@ func ScenarioRWMutexHeavyWrite() {
 	ScenarioHeavyWrite(app)
 }
 
+func ScenarioSyncMapMixed() {
+	app := CreateApp(true)
+	ScenarioMixedReadWrite(app)
+}
+
+func ScenarioRWMutexMixed() {
+	app := CreateApp(false)
+	ScenarioMixedReadWrite(app)
+}
+
 func main() {
 	fmt.Println("Starting benchmarks...")
 
-	start := time.Now()
-	ScenarioSyncMapHeavyRead()
-	fmt.Printf("sync.Map heavy read took: %v\n", time.Since(start))
-
-	start = time.Now()
-	ScenarioSyncMapHeavyWrite()
-	fmt.Printf("sync.Map heavy write took: %v\n", time.Since(start))
-
-	start = time.Now()
-	ScenarioRWMutexHeavyRead()
-	fmt.Printf("RWMutex heavy read took: %v\n", time.Since(start))
-
-	start = time.Now()
-	ScenarioRWMutexHeavyWrite()
-	fmt.Printf("RWMutex heavy write took: %v\n", time.Since(start))
-
-	start = time.Now()
-	ScenarioSyncMapMixed()
-	fmt.Printf("sync.Map mixed read/write took: %v\n", time.Since(start))
-
-	start = time.Now()
-	ScenarioRWMutexMixed()
-	fmt.Printf("RWMutex mixed read/write took: %v\n", time.Since(start))
+	runScenario("sync.Map heavy read", ScenarioSyncMapHeavyRead)
+	runScenario("sync.Map heavy write", ScenarioSyncMapHeavyWrite)
+	runScenario("RWMutex heavy read", ScenarioRWMutexHeavyRead)
+	runScenario("RWMutex heavy write", ScenarioRWMutexHeavyWrite)
+	runScenario("sync.Map mixed read/write", ScenarioSyncMapMixed)
+	runScenario("RWMutex mixed read/write", ScenarioRWMutexMixed)
 }
